@@ -35,13 +35,14 @@ impl Faker {
         let templates = Arc::new(InMemoryTemplateEngine::new(resolver));
 
         // Build engine
-        // Use DB-backed entry writer
-        let batch_writer: Arc<dyn EntryWriter> = Arc::new(PgEntryWriter::new(pool.clone()));
+        // Use DB-backed entry writer with batching
+        let batch_writer = Arc::new(PgEntryWriter::new(pool.clone()));
+        let entry_writer: Arc<dyn EntryWriter + Send + Sync> = batch_writer.clone();
         let registry: Box<dyn ContractRegistry> = Box::new(registry);
         let engine = PostingEngineImpl {
             registry,
             templates,
-            entry_writer: batch_writer,
+            entry_writer: entry_writer,
             fee_engine: None,
             position_tracker: None,
             compliance_checker: None,
@@ -131,6 +132,10 @@ impl Faker {
         }
 
         println!("  {}/{} posted successfully", success, count);
+
+        // Flush remaining buffered entries
+        batch_writer.flush().await?;
+
         Ok(())
     }
 

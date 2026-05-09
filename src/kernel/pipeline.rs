@@ -12,14 +12,14 @@ use super::errors::FbError;
 use super::engine::*;
 
 pub struct PostingEngineImpl {
-    pub registry: Box<dyn ContractRegistry>,
-    pub templates: Arc<dyn TemplateEngine>,
-    pub entry_writer: Arc<dyn EntryWriter>,
-    pub fee_engine: Option<Box<dyn FeeCalculator>>,
-    pub position_tracker: Option<Box<dyn PositionTracker>>,
-    pub compliance_checker: Option<Box<dyn ComplianceChecker>>,
-    pub event_store: Option<Box<dyn EventStore>>,
-    pub event_pub: Option<Box<dyn EventPublisher>>,
+    pub registry: Box<dyn ContractRegistry + Send + Sync>,
+    pub templates: Arc<dyn TemplateEngine + Send + Sync>,
+    pub entry_writer: Arc<dyn EntryWriter + Send + Sync>,
+    pub fee_engine: Option<Box<dyn FeeCalculator + Send + Sync>>,
+    pub position_tracker: Option<Box<dyn PositionTracker + Send + Sync>>,
+    pub compliance_checker: Option<Box<dyn ComplianceChecker + Send + Sync>>,
+    pub event_store: Option<Box<dyn EventStore + Send + Sync>>,
+    pub event_pub: Option<Box<dyn EventPublisher + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
