@@ -17,3 +17,5 @@ pub use engine::*;
 pub use pipeline::*;
 pub use template_engine::*;
 pub use batch_writer::*;
+pub mod cached_resolver;
+pub mod fast_writer;

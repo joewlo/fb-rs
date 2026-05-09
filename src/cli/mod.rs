@@ -1,5 +1,6 @@
 pub mod output;
 pub mod faker;
+pub mod bench;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -83,8 +84,14 @@ pub enum Command {
     },
     /// Generate fake data.
     Faker {
-        /// Number of records to generate.
-        #[arg(short = 'n')]
+        /// Number of records
+        #[arg(short = 'n', long)]
+        count: u64,
+    },
+    /// Run instrumented benchmark
+    Bench {
+        /// Number of transactions
+        #[arg(short = 'n', long, default_value = "50000")]
         count: u64,
     },
     /// Tax calculations.
@@ -552,6 +559,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Agent { action } => handle_agent(action).await,
         Command::Event { action } => handle_event(action).await,
         Command::Faker { count } => handle_faker(count).await,
+        Command::Bench { count } => handle_bench(count).await,
         Command::Tax { action } => handle_tax(action).await,
         Command::Perf { action } => handle_perf(action).await,
         Command::Statement { action } => handle_statement(action).await,
@@ -697,6 +705,13 @@ async fn handle_event(action: EventAction) -> Result<()> {
             not_implemented(&format!("event reconcile from={:?} to={:?}", from, to))
         }
     }
+}
+
+async fn handle_bench(count: u64) -> Result<()> {
+    let pool = crate::config::DatabaseConfig::default().create_pool().await
+        .map_err(|e| anyhow::anyhow!("db: {}", e))?;
+    crate::cli::bench::run_benchmark(&pool, count as usize).await
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn handle_faker(count: u64) -> Result<()> {
