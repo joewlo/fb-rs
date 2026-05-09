@@ -5,6 +5,8 @@ mod cli;
 mod config;
 mod db;
 mod enrichment;
+mod ledger;
+mod tenant;
 
 use tracing_subscriber;
 

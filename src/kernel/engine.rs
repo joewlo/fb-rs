@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use chrono::{NaiveDate, DateTime, Utc};
@@ -35,9 +36,9 @@ pub trait Contract: Send + Sync {
 // -- Registry --
 #[async_trait]
 pub trait ContractRegistry: Send + Sync {
-    async fn get_contract(&self, tenant_id: Uuid, instrument_type: &str) -> Result<Box<dyn Contract>, FbError>;
+    async fn get_contract(&self, tenant_id: Uuid, instrument_type: &str) -> Result<Arc<dyn Contract + Send + Sync>, FbError>;
     async fn get_schema(&self, tenant_id: Uuid, instrument_type: &str) -> Result<InstrumentSchema, FbError>;
-    fn register_contract(&mut self, instrument_type: &str, contract: Box<dyn Contract>);
+    fn register_contract(&mut self, instrument_type: &str, contract: Arc<dyn Contract + Send + Sync>);
     async fn list_instrument_types(&self, tenant_id: Uuid) -> Result<Vec<String>, FbError>;
 }
 

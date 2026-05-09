@@ -1,4 +1,5 @@
 pub mod output;
+pub mod faker;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -699,7 +700,11 @@ async fn handle_event(action: EventAction) -> Result<()> {
 }
 
 async fn handle_faker(count: u64) -> Result<()> {
-    not_implemented(&format!("faker count={}", count))
+    let pool = crate::config::DatabaseConfig::default().create_pool().await
+        .map_err(|e| anyhow::anyhow!("db: {}", e))?;
+
+    let f = crate::cli::faker::Faker { tenant_code: "jpmam".into() };
+    f.run(&pool, count as usize).await.map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn handle_tax(action: TaxAction) -> Result<()> {

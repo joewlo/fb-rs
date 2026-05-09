@@ -102,7 +102,7 @@ fn default_port() -> u16 {
 }
 
 fn default_db_url() -> String {
-    "postgres://localhost:5432/fb".into()
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost:5432/fb".into())
 }
 
 fn default_max_connections() -> u32 {

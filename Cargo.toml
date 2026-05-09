@@ -11,7 +11,7 @@ path = "src/main.rs"
 # CLI
 clap = { version = "4", features = ["derive"] }
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "bigdecimal", "json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "bigdecimal", "json", "rust_decimal"] }
 csv = "1"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
