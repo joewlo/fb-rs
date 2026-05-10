@@ -22,24 +22,11 @@ pub async fn run_benchmark(pool: &sqlx::PgPool, count: usize) -> Result<(), FbEr
     let tenant = match tenant_svc.get_by_code("jpmam").await {
         Ok(t) => t, Err(_) => tenant_svc.create("JP Morgan AM", "jpmam").await?,
     };
+    let tenant_id = tenant.id;
 
-    let resolver = CachedAccountResolver::new(pool.clone()).await?;
-    let templates = Arc::new(InMemoryTemplateEngine::new(Box::new(resolver)));
+    seed_accounts(pool, tenant_id).await?;
+
     let writer = Arc::new(FastBatchWriter::new(pool.clone()));
-    let mut registry = InMemoryRegistry::new();
-    registry.register_contract("BOND", Arc::new(bond::BondContract));
-    registry.register_contract("EQUITY", Arc::new(equity::EquityContract));
-    registry.register_contract("CRYPTO", Arc::new(crypto::CryptoContract));
-
-    let engine = PostingEngineImpl {
-        registry: Box::new(registry),
-        templates,
-        entry_writer: writer.clone() as Arc<dyn EntryWriter + Send + Sync>,
-        fee_engine: None, position_tracker: None, compliance_checker: None,
-        event_store: None, event_pub: None,
-    };
-
-    seed_accounts(pool, tenant.id).await?;
 
     let instruments: Vec<(&str, &str, Decimal)> = vec![
         ("US037833AK99","BOND",dec!(0.9825)), ("AAPL","EQUITY",dec!(185.50)),
@@ -51,78 +38,76 @@ pub async fn run_benchmark(pool: &sqlx::PgPool, count: usize) -> Result<(), FbEr
         ("SOL","CRYPTO",dec!(145.0)), ("IBM.GL","BOND",dec!(1.0450)),
         ("US91282CFW45","BOND",dec!(1.0210)),
     ];
-    let counterparties = ["GSCO","BNPP","MSCO","JPM","DBAG","CITI","BOFA","UBS","COIN","KRAK"];
-    let mut rng = StdRng::from_entropy();
+    let instruments = Arc::new(instruments);
+    let counterparties = Arc::new(["GSCO","BNPP","MSCO","JPM","DBAG","CITI","BOFA","UBS","COIN","KRAK"]);
 
-    let mut ingest_us = 0u64; let mut enrich_us = 0u64; let mut generate_us = 0u64;
-    let mut check_us = 0u64; let mut post_us = 0u64;
-    let mut success = 0u64; let mut entries_written = 0u64;
+    let concurrency = 8;
+    let per_task = count / concurrency;
+    println!("Bench: {} tx, {} parallel tasks ({} each)", count, concurrency, per_task);
 
-    println!("Bench: {} tx (seq IDs, cached resolver, bulk INSERT)", count);
-
-    for _i in 0..count {
-        let (inst_id, inst_type, base_price) = &instruments[rng.gen_range(0..instruments.len())];
-        let desk = match *inst_type { "BOND" => "ny-fi", "EQUITY" => "ny-eq", _ => "ny-crypto" };
-        let cp = counterparties[rng.gen_range(0..counterparties.len())];
-        let qty = match *inst_type {
-            "BOND" => Decimal::from(rng.gen_range(1_000_000..50_000_000)),
-            "EQUITY" => Decimal::from(rng.gen_range(100..500_000)),
-            _ => Decimal::from(rng.gen_range(1..100)),
-        };
-        let price = *base_price * (dec!(0.95) + Decimal::from(rng.gen_range(0..10)) / dec!(100));
-        let trade_date = chrono::Utc::now().date_naive() - chrono::Duration::days(rng.gen_range(0..30));
-
-        let mut attrs = AttributeBag::new();
-        attrs.set_quantity(QuantityType::Traded, qty);
-        attrs.set_price(PriceType::Clean, price.round_dp(4));
-        attrs.set_date(DateType::Trade, trade_date);
-        attrs.set_string("counterparty", cp);
-        attrs.set_string("desk", desk);
-        attrs.set_string("currency", "USD"); attrs.set_string("geo", "us-east");
-
-        let raw = RawTransaction {
-            tenant_id: tenant.id, instrument_type: (*inst_type).to_string(),
-            instrument_id: inst_id.to_string(),
-            parent_tx_id: None, root_tx_id: None, link_type: None, link_depth: 0,
-            attributes: attrs, idempotency_key: Some(next_id()), metadata: None,
-        };
-
-        let t0 = Instant::now();
-        let ingested = match engine.ingest(raw).await { Ok(r) => r, Err(_) => continue };
-        ingest_us += t0.elapsed().as_micros() as u64;
-        let t0 = Instant::now();
-        let enriched = match engine.enrich(&ingested).await { Ok(r) => r, Err(_) => continue };
-        enrich_us += t0.elapsed().as_micros() as u64;
-        let t0 = Instant::now();
-        let mut posted = match engine.generate(&enriched).await { Ok(r) => r, Err(_) => continue };
-        generate_us += t0.elapsed().as_micros() as u64;
-        let t0 = Instant::now();
-        if engine.check(&posted).await.is_err() { continue; }
-        check_us += t0.elapsed().as_micros() as u64;
-        let t0 = Instant::now();
-        if engine.post(&mut posted).await.is_err() { continue; }
-        post_us += t0.elapsed().as_micros() as u64;
-
-        entries_written += posted.entries.len() as u64;
-        success += 1;
-        if success % 5000 == 0 {
-            let e = total_start.elapsed().as_secs_f64();
-            println!("  {}k ({:.1}s, {:.0}/s)", success/1000, e, success as f64/e);
-        }
+    let mut handles = Vec::new();
+    for _ in 0..concurrency {
+        let pool = pool.clone();
+        let writer = writer.clone();
+        let instruments = instruments.clone();
+        let counterparties = counterparties.clone();
+        handles.push(tokio::spawn(async move {
+            let resolver = CachedAccountResolver::new(pool.clone()).await?;
+            let templates = Arc::new(InMemoryTemplateEngine::new(Box::new(resolver)));
+            let mut registry = InMemoryRegistry::new();
+            registry.register_contract("BOND", Arc::new(bond::BondContract));
+            registry.register_contract("EQUITY", Arc::new(equity::EquityContract));
+            registry.register_contract("CRYPTO", Arc::new(crypto::CryptoContract));
+            let eng = PostingEngineImpl {
+                registry: Box::new(registry),
+                templates,
+                entry_writer: writer as Arc<dyn EntryWriter + Send + Sync>,
+                fee_engine: None, position_tracker: None, compliance_checker: None,
+                event_store: None, event_pub: None,
+            };
+            let mut rng = StdRng::from_entropy();
+            let mut success = 0u64;
+            for _ in 0..per_task {
+                let idx = rng.gen_range(0..instruments.len());
+                let (inst_id, inst_type, base_price) = &instruments[idx];
+                let desk = match *inst_type { "BOND" => "ny-fi", "EQUITY" => "ny-eq", _ => "ny-crypto" };
+                let cp = counterparties[rng.gen_range(0..counterparties.len())];
+                let qty = match *inst_type {
+                    "BOND" => Decimal::from(rng.gen_range(1_000_000..50_000_000)),
+                    "EQUITY" => Decimal::from(rng.gen_range(100..500_000)),
+                    _ => Decimal::from(rng.gen_range(1..100)),
+                };
+                let price = *base_price * (dec!(0.95) + Decimal::from(rng.gen_range(0..10)) / dec!(100));
+                let mut attrs = AttributeBag::new();
+                attrs.set_quantity(QuantityType::Traded, qty);
+                attrs.set_price(PriceType::Clean, price.round_dp(4));
+                attrs.set_date(DateType::Trade, chrono::Utc::now().date_naive() - chrono::Duration::days(rng.gen_range(0..30)));
+                attrs.set_string("counterparty", cp);
+                attrs.set_string("desk", desk);
+                attrs.set_string("currency", "USD"); attrs.set_string("geo", "us-east");
+                let raw = RawTransaction {
+                    tenant_id, instrument_type: (*inst_type).to_string(), instrument_id: inst_id.to_string(),
+                    parent_tx_id: None, root_tx_id: None, link_type: None, link_depth: 0,
+                    attributes: attrs, idempotency_key: Some(next_id()), metadata: None,
+                };
+                if eng.submit(raw).await.is_ok() { success += 1; }
+            }
+            Ok::<u64, FbError>(success)
+        }));
     }
 
+    let mut total_success = 0u64;
+    for h in handles {
+        total_success += h.await.unwrap().unwrap_or(0);
+    }
     let t0 = Instant::now();
     writer.flush().await?;
-    let flush_us = t0.elapsed().as_micros() as u64;
+    let flush_ms = t0.elapsed().as_micros() as f64 / 1000.0;
     let total = total_start.elapsed().as_secs_f64();
 
     println!("\n=== RESULTS ===");
-    println!("  Tx: {} | Entries: {} | {:.2}s | {:.0}/s", success, entries_written, total, success as f64/total);
-    if success > 0 {
-        let n = success as f64;
-        println!("  Stage: ingest={:.0} enrich={:.0} gen={:.0} check={:.0} post={:.0} us/tx | flush={:.1}ms",
-            ingest_us as f64/n, enrich_us as f64/n, generate_us as f64/n, check_us as f64/n, post_us as f64/n, flush_us as f64/1000.0);
-    }
+    println!("  Tx: {} | {:.2}s | {:.0}/s | flush={:.1}ms | tasks={}",
+        total_success, total, total_success as f64 / total, flush_ms, concurrency);
     Ok(())
 }
 
